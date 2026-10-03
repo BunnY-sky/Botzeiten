@@ -1,12 +1,6 @@
 {
-  "channelId": "1555942636299227196",
-  "events": [
-    {
-      "id": 1,
-      "name": "OBerork",
-      "time": "16:10",
-      "roleId": "1490761924005331025",
-      "lastTriggered": "2026-10-03"
-    }
-  ]
+  "channelId": null,
+  "moderatorRoleId": null,
+  "events": [],
+  "youtube": []
 }

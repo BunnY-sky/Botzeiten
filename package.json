@@ -1,7 +1,15 @@
 {
-  "name":"discord-botzeiten",
-  "version":"1.0.1",
-  "main":"index.js",
-  "scripts":{"start":"node index.js"},
-  "dependencies":{"discord.js":"^14.24.2","dotenv":"^17.2.3"}
+  "name": "botzeiten",
+  "version": "1.1.0",
+  "description": "Discord Botzeiten mit Boss-Erinnerungen und YouTube-Live-Pings",
+  "main": "index.js",
+  "author": "Marek",
+  "license": "MIT",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.4.7"
+  }
 }
