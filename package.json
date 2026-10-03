@@ -1,6 +1,6 @@
 {
   "name": "botzeiten",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Discord Botzeiten mit Boss-Erinnerungen und YouTube-Live-Pings",
   "main": "index.js",
   "author": "Marek",

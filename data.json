@@ -1,6 +1,9 @@
 {
   "channelId": null,
   "moderatorRoleId": null,
+  "maintenanceChannelId": null,
+  "lastMaintenanceMessageId": null,
+  "lastMaintenanceResetAt": null,
   "events": [],
   "youtube": []
 }

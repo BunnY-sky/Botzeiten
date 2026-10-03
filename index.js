@@ -30,6 +30,7 @@ const DATA_FILE = path.join(__dirname, "data.json");
 const defaultData = {
   channelId: null,
   moderatorRoleId: null,
+  maintenanceChannelId: null,
   events: [],
   youtube: []
 };
@@ -131,29 +132,33 @@ function buildCommands() {
 
     new SlashCommandBuilder()
       .setName("zeit")
-      .setDescription("Bosszeiten verwalten.")
+      .setDescription("Boss-Tracker verwalten.")
       .addSubcommand(s => s
         .setName("hinzufuegen")
-        .setDescription("Neue Bosszeit hinzufügen.")
+        .setDescription("Neuen Boss-Tracker hinzufügen.")
         .addStringOption(o => o.setName("name").setDescription("Name des Bosses").setRequired(true))
-        .addStringOption(o => o.setName("uhrzeit").setDescription("HH:MM, z. B. 18:00").setRequired(true))
+        .addIntegerOption(o => o.setName("stunden").setDescription("Spawn-Intervall in Stunden, z. B. 2").setMinValue(1).setMaxValue(168).setRequired(true))
         .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(false))
         .addBooleanOption(o => o.setName("erinnerungen").setDescription("10 und 5 Minuten vorher erinnern").setRequired(false)))
       .addSubcommand(s => s
         .setName("anzeigen")
-        .setDescription("Zeigt alle Bosszeiten."))
+        .setDescription("Zeigt alle Boss-Tracker."))
       .addSubcommand(s => s
         .setName("bearbeiten")
-        .setDescription("Bearbeitet eine Bosszeit.")
-        .addIntegerOption(o => o.setName("id").setDescription("ID der Bosszeit").setRequired(true))
+        .setDescription("Bearbeitet einen Boss-Tracker.")
+        .addIntegerOption(o => o.setName("id").setDescription("ID des Trackers").setRequired(true))
         .addStringOption(o => o.setName("name").setDescription("Neuer Name").setRequired(false))
-        .addStringOption(o => o.setName("uhrzeit").setDescription("Neue Uhrzeit HH:MM").setRequired(false))
+        .addIntegerOption(o => o.setName("stunden").setDescription("Neues Spawn-Intervall in Stunden").setMinValue(1).setMaxValue(168).setRequired(false))
         .addRoleOption(o => o.setName("rolle").setDescription("Neue Ping-Rolle").setRequired(false))
         .addBooleanOption(o => o.setName("erinnerungen").setDescription("10 und 5 Minuten vorher").setRequired(false)))
       .addSubcommand(s => s
         .setName("loeschen")
-        .setDescription("Löscht eine Bosszeit.")
-        .addIntegerOption(o => o.setName("id").setDescription("ID der Bosszeit").setRequired(true))),
+        .setDescription("Löscht einen Boss-Tracker.")
+        .addIntegerOption(o => o.setName("id").setDescription("ID des Trackers").setRequired(true)))
+      .addSubcommand(s => s
+        .setName("reset")
+        .setDescription("Setzt alle Boss-Tracker sofort zurück.")),
+
 
     new SlashCommandBuilder()
       .setName("youtube")
@@ -186,7 +191,10 @@ function buildCommands() {
       .addSubcommand(s => s
         .setName("moderator")
         .setDescription("Moderator-Rolle festlegen.")
-        .addRoleOption(o => o.setName("rolle").setDescription("Rolle mit Bot-Verwaltungsrechten").setRequired(true)))
+        .addRoleOption(o => o.setName("rolle").setDescription("Rolle mit Bot-Verwaltungsrechten").setRequired(true))).addSubcommand(s => s
+        .setName("trackerkanal")
+        .setDescription("Maintenance-Tracker-Kanal festlegen.")
+        .addChannelOption(o => o.setName("channel").setDescription("Channel mit Maintenance-Meldungen").addChannelTypes(ChannelType.GuildText).setRequired(true)))
   ].map(c => c.toJSON());
 }
 
@@ -304,28 +312,96 @@ async function checkYouTube() {
   }
 }
 
+function getNowIso() {
+  return new Date().toISOString();
+}
+
+function getNextSpawnDate(event) {
+  if (!event.nextSpawnAt) return null;
+  const d = new Date(event.nextSpawnAt);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function formatRemaining(ms) {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) return `${hours} Std. ${minutes} Min.`;
+  return `${minutes} Min.`;
+}
+
+function resetAllTrackers(reason = "Maintenance") {
+  const now = Date.now();
+  for (const e of data.events) {
+    const intervalHours = Number(e.intervalHours) || 2;
+    e.nextSpawnAt = new Date(now + intervalHours * 60 * 60 * 1000).toISOString();
+    e.lastReminder10 = null;
+    e.lastReminder5 = null;
+  }
+  data.lastMaintenanceResetAt = new Date(now).toISOString();
+  data.lastMaintenanceResetReason = reason;
+  saveData();
+  console.log(`🔄 Alle Boss-Tracker wurden zurückgesetzt: ${reason}`);
+}
+
 async function checkTimes() {
-  const { date, time } = nowBerlin();
+  const now = Date.now();
   let changed = false;
 
   for (const e of data.events) {
-    if (!e.time) continue;
+    // Kompatibilität mit alten Daten: alte feste Uhrzeit-Einträge werden
+    // beim nächsten Start einmalig in einen 2-Stunden-Tracker umgewandelt.
+    if (!e.intervalHours) {
+      e.intervalHours = 2;
+      if (!e.nextSpawnAt) {
+        e.nextSpawnAt = new Date(now + 2 * 60 * 60 * 1000).toISOString();
+      }
+      changed = true;
+    }
 
-    const reminder10 = timeMinusMinutes(e.time, 10);
-    const reminder5 = timeMinusMinutes(e.time, 5);
+    const nextSpawn = getNextSpawnDate(e);
+    if (!nextSpawn) {
+      e.nextSpawnAt = new Date(now + Number(e.intervalHours) * 60 * 60 * 1000).toISOString();
+      e.lastReminder10 = null;
+      e.lastReminder5 = null;
+      changed = true;
+      continue;
+    }
 
+    const remaining = nextSpawn.getTime() - now;
     let reminderType = null;
-    if (e.reminders !== false && time === reminder10 && e.lastReminder10 !== date) {
+
+    if (
+      e.reminders !== false &&
+      remaining <= 10 * 60 * 1000 &&
+      remaining > 5 * 60 * 1000 &&
+      e.lastReminder10 !== e.nextSpawnAt
+    ) {
       reminderType = 10;
-      e.lastReminder10 = date;
+      e.lastReminder10 = e.nextSpawnAt;
       changed = true;
-    } else if (e.reminders !== false && time === reminder5 && e.lastReminder5 !== date) {
+    } else if (
+      e.reminders !== false &&
+      remaining <= 5 * 60 * 1000 &&
+      remaining > 0 &&
+      e.lastReminder5 !== e.nextSpawnAt
+    ) {
       reminderType = 5;
-      e.lastReminder5 = date;
+      e.lastReminder5 = e.nextSpawnAt;
       changed = true;
-    } else if (time === e.time && e.lastTriggered !== date) {
+    } else if (remaining <= 0 && e.lastTriggered !== e.nextSpawnAt) {
       reminderType = 0;
-      e.lastTriggered = date;
+      e.lastTriggered = e.nextSpawnAt;
+
+      // Falls der Bot während eines Spawn-Zeitpunkts offline war, wird der
+      // nächste Spawn trotzdem relativ zum vorherigen Tracker weitergeführt.
+      const intervalMs = Number(e.intervalHours) * 60 * 60 * 1000;
+      do {
+        e.nextSpawnAt = new Date(nextSpawn.getTime() + intervalMs).toISOString();
+      } while (new Date(e.nextSpawnAt).getTime() <= now);
+
+      e.lastReminder10 = null;
+      e.lastReminder5 = null;
       changed = true;
     }
 
@@ -349,7 +425,7 @@ async function checkTimes() {
         allowedMentions: { roles: e.roleId ? [e.roleId] : [] }
       });
 
-      console.log(`[${date} ${time}] ${e.name}: ${reminderType === 0 ? "Start" : `${reminderType} Min Erinnerung`}`);
+      console.log(`Boss-Tracker ${e.name}: ${reminderType === 0 ? "Spawn" : `${reminderType} Min Erinnerung`}`);
     } catch (err) {
       console.error(`Fehler bei "${e.name}":`, err.message);
     }
@@ -358,18 +434,64 @@ async function checkTimes() {
   if (changed) saveData();
 }
 
+function isMaintenanceCompletedMessage(message) {
+  if (!message || message.author?.bot) return false;
+
+  const channelMatches = data.maintenanceChannelId
+    ? message.channelId === data.maintenanceChannelId
+    : message.channel?.name === "maintance-tracker";
+
+  if (!channelMatches) return false;
+
+  // Wir prüfen den Text statt die Discord-CDN-URL des Emojis.
+  // Dadurch funktioniert der Trigger auch bei Änderungen an der Emoji-Grafik.
+  return /RIBUT\s*\|\s*MAINTENANCE\s+COMPLETED/i.test(message.content || "");
+}
+
+async function checkMaintenanceHistory() {
+  const channel = data.maintenanceChannelId
+    ? await client.channels.fetch(data.maintenanceChannelId).catch(() => null)
+    : client.channels.cache.find(c => c.name === "maintance-tracker" && c.isTextBased());
+
+  if (!channel || !channel.isTextBased()) {
+    console.log("⚠️ Maintenance-Tracker-Channel nicht gefunden. Nutze /config trackerkanal oder erstelle 'maintance-tracker'.");
+    return;
+  }
+
+  // Beim Start wird absichtlich nur der neueste Zustand berücksichtigt.
+  // Alte Maintenance-Meldungen dürfen keinen Reset auslösen.
+  const messages = await channel.messages.fetch({ limit: 10 }).catch(() => null);
+  if (!messages) return;
+
+  const latest = messages.find(m => isMaintenanceCompletedMessage(m));
+  if (!latest) return;
+
+  const latestAt = latest.createdAt.toISOString();
+  if (data.lastMaintenanceMessageId === latest.id) return;
+
+  data.lastMaintenanceMessageId = latest.id;
+  saveData();
+
+  // Nur eine neue Maintenance-Nachricht seit dem letzten gespeicherten Reset.
+  const lastReset = data.lastMaintenanceResetAt ? new Date(data.lastMaintenanceResetAt).getTime() : 0;
+  if (latest.createdTimestamp > lastReset) {
+    resetAllTrackers(`Maintenance: ${latest.createdAt.toLocaleString("de-DE")}`);
+  }
+}
+
 function helpEmbed() {
   return new EmbedBuilder()
     .setTitle("🤖 Botzeiten")
     .setDescription("Übersicht über die verfügbaren Befehle.")
     .addFields(
       {
-        name: "⏰ Bosszeiten",
+        name: "⏰ Boss-Tracker",
         value:
-          "`/zeit hinzufügen` – neue Bosszeit\n" +
-          "`/zeit anzeigen` – alle Zeiten\n" +
-          "`/zeit bearbeiten` – Zeit ändern\n" +
-          "`/zeit löschen` – Zeit entfernen"
+          "`/zeit hinzufügen` – Tracker mit Intervall anlegen\n" +
+          "`/zeit anzeigen` – alle Tracker\n" +
+          "`/zeit bearbeiten` – Intervall ändern\n" +
+          "`/zeit löschen` – Tracker entfernen\n" +
+          "`/zeit reset` – alle Tracker sofort resetten"
       },
       {
         name: "📺 YouTube",
@@ -383,7 +505,8 @@ function helpEmbed() {
         name: "⚙️ Konfiguration",
         value:
           "`/config kanal` – Boss-Meldekanal\n" +
-          "`/config moderator` – Moderator-Rolle"
+          "`/config moderator` – Moderator-Rolle\n" +
+          "`/config trackerkanal` – Maintenance-Tracker-Channel"
       },
       {
         name: "ℹ️ Sonstiges",
@@ -394,17 +517,38 @@ function helpEmbed() {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds]
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
 });
 
 client.once("ready", async () => {
   console.log(`Eingeloggt als ${client.user.tag}`);
   console.log(`Zeitzone: ${TIMEZONE}`);
   await registerCommands().catch(err => console.error("Command-Registrierung:", err.message));
+  await checkMaintenanceHistory();
   await checkTimes();
   await checkYouTube();
   setInterval(checkTimes, 15000);
   setInterval(checkYouTube, 60000);
+  setInterval(checkMaintenanceHistory, 30000);
+});
+
+client.on("messageCreate", async message => {
+  try {
+    if (!isMaintenanceCompletedMessage(message)) return;
+
+    console.log(`🛠️ Maintenance-Trigger erkannt in #${message.channel?.name}: ${message.content}`);
+
+    if (data.lastMaintenanceMessageId === message.id) return;
+
+    data.lastMaintenanceMessageId = message.id;
+    resetAllTrackers(`Maintenance: ${message.id}`);
+  } catch (err) {
+    console.error("Maintenance-Tracker-Fehler:", err);
+  }
 });
 
 client.on("interactionCreate", async i => {
@@ -422,8 +566,9 @@ client.on("interactionCreate", async i => {
         .addFields(
           { name: "🟢 Bot", value: "Online", inline: true },
           { name: "🕐 Zeit", value: time, inline: true },
-          { name: "⏰ Bosszeiten", value: String(data.events.length), inline: true },
+          { name: "⏰ Boss-Tracker", value: String(data.events.length), inline: true },
           { name: "📺 YouTube", value: String(data.youtube.length), inline: true },
+          { name: "🛠️ Maintenance", value: data.maintenanceChannelId ? channelMention(data.maintenanceChannelId) : "#maintance-tracker", inline: true },
           { name: "🔔 Meldekanal", value: channelMention(data.channelId) || "Nicht gesetzt", inline: true },
           { name: "🛡️ Moderator", value: roleMention(data.moderatorRoleId) || "Nicht gesetzt", inline: true }
         )
@@ -437,9 +582,13 @@ client.on("interactionCreate", async i => {
 
       if (sub === "anzeigen") {
         if (!data.events.length) return i.reply("⏰ Es sind keine Bosszeiten eingerichtet.");
-        const lines = data.events.map(e =>
-          `**#${e.id} ${e.name}** – ${e.time} Uhr ${e.reminders !== false ? "🔔 10/5 Min" : "🔕"} ${roleMention(e.roleId)}`
-        );
+        const lines = data.events.map(e => {
+          const next = getNextSpawnDate(e);
+          const nextText = next
+            ? `<t:${Math.floor(next.getTime() / 1000)}:R> (<t:${Math.floor(next.getTime() / 1000)}:t>)`
+            : "nicht gesetzt";
+          return `**#${e.id} ${e.name}** – alle **${e.intervalHours} Std.** → nächster Spawn ${nextText} ${e.reminders !== false ? "🔔 10/5 Min" : "🔕"} ${roleMention(e.roleId)}`;
+        });
         return i.reply({
           embeds: [new EmbedBuilder().setTitle("⏰ Bosszeiten").setDescription(lines.join("\n")).setTimestamp()]
         });
@@ -449,16 +598,18 @@ client.on("interactionCreate", async i => {
 
       if (sub === "hinzufuegen") {
         const name = i.options.getString("name", true);
-        const time = i.options.getString("uhrzeit", true);
+        const intervalHours = i.options.getInteger("stunden", true);
         const role = i.options.getRole("rolle");
         const reminders = i.options.getBoolean("erinnerungen") ?? true;
-        if (!isValidTime(time)) return i.reply({ content: "❌ Die Uhrzeit muss im Format `HH:MM` sein, z. B. `18:00`.", ephemeral: true });
 
         const nextId = data.events.length ? Math.max(...data.events.map(e => Number(e.id) || 0)) + 1 : 1;
+        const nextSpawnAt = new Date(Date.now() + intervalHours * 60 * 60 * 1000).toISOString();
+
         data.events.push({
           id: nextId,
           name,
-          time,
+          intervalHours,
+          nextSpawnAt,
           roleId: role?.id || null,
           reminders,
           channelId: data.channelId,
@@ -470,9 +621,10 @@ client.on("interactionCreate", async i => {
 
         return i.reply({
           embeds: [new EmbedBuilder()
-            .setTitle("✅ Bosszeit erstellt")
-            .setDescription(`**${name}** um **${time} Uhr**.`)
+            .setTitle("✅ Boss-Tracker erstellt")
+            .setDescription(`**${name}** spawnt ab jetzt alle **${intervalHours} Stunden**.`)
             .addFields(
+              { name: "⏭️ Erster Spawn", value: `<t:${Math.floor(new Date(nextSpawnAt).getTime() / 1000)}:F>`, inline: true },
               { name: "🔔 Erinnerungen", value: reminders ? "10 und 5 Minuten vorher" : "Deaktiviert", inline: true },
               { name: "👤 Rolle", value: roleMention(role?.id) || "Keine", inline: true }
             )]
@@ -485,14 +637,14 @@ client.on("interactionCreate", async i => {
         if (!e) return i.reply({ content: "❌ Bosszeit nicht gefunden.", ephemeral: true });
 
         const name = i.options.getString("name");
-        const time = i.options.getString("uhrzeit");
+        const intervalHours = i.options.getInteger("stunden");
         const role = i.options.getRole("rolle");
         const reminders = i.options.getBoolean("erinnerungen");
 
-        if (time && !isValidTime(time)) return i.reply({ content: "❌ Uhrzeit muss `HH:MM` sein.", ephemeral: true });
         if (name !== null) e.name = name;
-        if (time !== null) {
-          e.time = time;
+        if (intervalHours !== null) {
+          e.intervalHours = intervalHours;
+          e.nextSpawnAt = new Date(Date.now() + intervalHours * 60 * 60 * 1000).toISOString();
           e.lastReminder10 = null;
           e.lastReminder5 = null;
           e.lastTriggered = null;
@@ -510,7 +662,12 @@ client.on("interactionCreate", async i => {
         data.events = data.events.filter(x => Number(x.id) !== id);
         if (data.events.length === before) return i.reply({ content: "❌ Bosszeit nicht gefunden.", ephemeral: true });
         saveData();
-        return i.reply(`🗑️ Bosszeit **#${id}** wurde gelöscht.`);
+        return i.reply(`🗑️ Boss-Tracker **#${id}** wurde gelöscht.`);
+      }
+
+      if (sub === "reset") {
+        resetAllTrackers("Manueller Reset");
+        return i.reply("🔄 Alle Boss-Tracker wurden sofort zurückgesetzt. Die Intervalle laufen jetzt erneut ab dem Reset.");
       }
     }
 
@@ -607,6 +764,13 @@ client.on("interactionCreate", async i => {
         data.moderatorRoleId = role.id;
         saveData();
         return i.reply(`✅ ${roleMention(role.id)} kann den Bot jetzt vollständig verwalten.`);
+      }
+
+      if (sub === "trackerkanal") {
+        const channel = i.options.getChannel("channel", true);
+        data.maintenanceChannelId = channel.id;
+        saveData();
+        return i.reply(`✅ Maintenance-Tracker ist jetzt ${channelMention(channel.id)}. Trigger: **RIBUT | MAINTENANCE COMPLETED**`);
       }
     }
   } catch (err) {
