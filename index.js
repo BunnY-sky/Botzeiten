@@ -141,7 +141,7 @@ function buildCommands() {
         .setName("hinzufuegen")
         .setDescription("Neuen Boss-Tracker hinzufügen.")
         .addStringOption(o => o.setName("name").setDescription("Name des Bosses").setRequired(true))
-        .addIntegerOption(o => o.setName("stunden").setDescription("Spawn-Intervall in Stunden, z. B. 2").setMinValue(1).setMaxValue(168).setRequired(true))
+        .addIntegerOption(o => o.setName("minuten").setDescription("Spawn-Intervall in Minuten, z. B. 30 oder 150 für 2 Std. 30 Min.").setMinValue(15).setMaxValue(10080).setRequired(true))
         .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(false))
         .addBooleanOption(o => o.setName("erinnerungen").setDescription("10 und 5 Minuten vorher erinnern").setRequired(false)))
       .addSubcommand(s => s
@@ -152,7 +152,7 @@ function buildCommands() {
         .setDescription("Bearbeitet einen Boss-Tracker.")
         .addIntegerOption(o => o.setName("id").setDescription("ID des Trackers").setRequired(true))
         .addStringOption(o => o.setName("name").setDescription("Neuer Name").setRequired(false))
-        .addIntegerOption(o => o.setName("stunden").setDescription("Neues Spawn-Intervall in Stunden").setMinValue(1).setMaxValue(168).setRequired(false))
+        .addIntegerOption(o => o.setName("minuten").setDescription("Neues Spawn-Intervall in Minuten").setMinValue(15).setMaxValue(10080).setRequired(false))
         .addRoleOption(o => o.setName("rolle").setDescription("Neue Ping-Rolle").setRequired(false))
         .addBooleanOption(o => o.setName("erinnerungen").setDescription("10 und 5 Minuten vorher").setRequired(false)))
       .addSubcommand(s => s
@@ -464,10 +464,43 @@ function formatRemaining(ms) {
   return `${minutes} Min.`;
 }
 
+function getIntervalMinutes(event) {
+  if (Number.isFinite(Number(event.intervalMinutes)) && Number(event.intervalMinutes) > 0) {
+    return Number(event.intervalMinutes);
+  }
+  if (Number.isFinite(Number(event.intervalHours)) && Number(event.intervalHours) > 0) {
+    return Number(event.intervalHours) * 60;
+  }
+  return 120;
+}
+
+function formatInterval(minutes) {
+  const total = Math.max(1, Number(minutes) || 120);
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  if (hours > 0 && mins > 0) return `${hours} Std. ${mins} Min.`;
+  if (hours > 0) return `${hours} Std.`;
+  return `${mins} Min.`;
+}
+
+function migrateEventInterval(event) {
+  if (!Number.isFinite(Number(event.intervalMinutes)) || Number(event.intervalMinutes) <= 0) {
+    if (Number.isFinite(Number(event.intervalHours)) && Number(event.intervalHours) > 0) {
+      event.intervalMinutes = Number(event.intervalHours) * 60;
+    } else {
+      event.intervalMinutes = 120;
+    }
+  }
+  delete event.intervalHours;
+  return event.intervalMinutes;
+}
+
 function resetTracker(event, reason = "Manueller Reset") {
   const now = Date.now();
-  const intervalHours = Number(event.intervalHours) || 2;
-  event.nextSpawnAt = new Date(now + intervalHours * 60 * 60 * 1000).toISOString();
+  const intervalMinutes = getIntervalMinutes(event);
+  event.intervalMinutes = intervalMinutes;
+  delete event.intervalHours;
+  event.nextSpawnAt = new Date(now + intervalMinutes * 60 * 1000).toISOString();
   event.lastReminder10 = null;
   event.lastReminder5 = null;
   event.lastTriggered = null;
@@ -479,8 +512,10 @@ function resetTracker(event, reason = "Manueller Reset") {
 
 function resetAllTrackers(reason = "Maintenance", resetTimestamp = Date.now()) {
   for (const e of data.events) {
-    const intervalHours = Number(e.intervalHours) || 2;
-    e.nextSpawnAt = new Date(resetTimestamp + intervalHours * 60 * 60 * 1000).toISOString();
+    const intervalMinutes = getIntervalMinutes(e);
+    e.intervalMinutes = intervalMinutes;
+    delete e.intervalHours;
+    e.nextSpawnAt = new Date(resetTimestamp + intervalMinutes * 60 * 1000).toISOString();
     e.lastReminder10 = null;
     e.lastReminder5 = null;
     e.lastTriggered = null;
@@ -529,19 +564,15 @@ async function checkTimes() {
     if (e.lastSpawnMessageId === undefined) e.lastSpawnMessageId = null;
     if (e.spawnDeleteAt === undefined) e.spawnDeleteAt = null;
 
-    // Kompatibilität mit alten Daten: alte feste Uhrzeit-Einträge werden
-    // beim nächsten Start einmalig in einen 2-Stunden-Tracker umgewandelt.
-    if (!e.intervalHours) {
-      e.intervalHours = 2;
-      if (!e.nextSpawnAt) {
-        e.nextSpawnAt = new Date(now + 2 * 60 * 60 * 1000).toISOString();
-      }
-      changed = true;
-    }
+    // Alte Timer mit Stunden werden automatisch in Minuten umgewandelt.
+    const beforeMinutes = e.intervalMinutes;
+    const beforeHours = e.intervalHours;
+    migrateEventInterval(e);
+    if (beforeMinutes !== e.intervalMinutes || beforeHours !== undefined) changed = true;
 
     const nextSpawn = getNextSpawnDate(e);
     if (!nextSpawn) {
-      e.nextSpawnAt = new Date(now + Number(e.intervalHours) * 60 * 60 * 1000).toISOString();
+      e.nextSpawnAt = new Date(now + getIntervalMinutes(e) * 60 * 1000).toISOString();
       e.lastReminder10 = null;
       e.lastReminder5 = null;
       changed = true;
@@ -571,7 +602,7 @@ async function checkTimes() {
 
       // Falls der Bot während eines Spawn-Zeitpunkts offline war, wird der
       // nächste Spawn trotzdem relativ zum vorherigen Tracker weitergeführt.
-      const intervalMs = Number(e.intervalHours) * 60 * 60 * 1000;
+      const intervalMs = getIntervalMinutes(e) * 60 * 1000;
       do {
         e.nextSpawnAt = new Date(nextSpawn.getTime() + intervalMs).toISOString();
       } while (new Date(e.nextSpawnAt).getTime() <= now);
@@ -794,7 +825,7 @@ client.on("interactionCreate", async i => {
           const nextText = next
             ? `<t:${Math.floor(next.getTime() / 1000)}:R> (<t:${Math.floor(next.getTime() / 1000)}:t>)`
             : "nicht gesetzt";
-          return `**#${e.id} ${e.name}** – alle **${e.intervalHours} Std.** → nächster Spawn ${nextText} ${e.reminders !== false ? "🔔 10/5 Min" : "🔕"} ${roleMention(e.roleId)}`;
+          return `**#${e.id} ${e.name}** – alle **${formatInterval(getIntervalMinutes(e))}** → nächster Spawn ${nextText} ${e.reminders !== false ? "🔔 10/5 Min" : "🔕"} ${roleMention(e.roleId)}`;
         });
         return i.reply({
           embeds: [new EmbedBuilder().setTitle("⏰ Bosszeiten").setDescription(lines.join("\n")).setTimestamp()]
@@ -805,17 +836,17 @@ client.on("interactionCreate", async i => {
 
       if (sub === "hinzufuegen") {
         const name = i.options.getString("name", true);
-        const intervalHours = i.options.getInteger("stunden", true);
+        const intervalMinutes = i.options.getInteger("minuten", true);
         const role = i.options.getRole("rolle");
         const reminders = i.options.getBoolean("erinnerungen") ?? true;
 
         const nextId = data.events.length ? Math.max(...data.events.map(e => Number(e.id) || 0)) + 1 : 1;
-        const nextSpawnAt = new Date(Date.now() + intervalHours * 60 * 60 * 1000).toISOString();
+        const nextSpawnAt = new Date(Date.now() + intervalMinutes * 60 * 1000).toISOString();
 
         data.events.push({
           id: nextId,
           name,
-          intervalHours,
+          intervalMinutes,
           nextSpawnAt,
           roleId: role?.id || null,
           reminders,
@@ -829,7 +860,7 @@ client.on("interactionCreate", async i => {
         return i.reply({
           embeds: [new EmbedBuilder()
             .setTitle("✅ Boss-Tracker erstellt")
-            .setDescription(`**${name}** spawnt ab jetzt alle **${intervalHours} Stunden**.`)
+            .setDescription(`**${name}** spawnt ab jetzt alle **${formatInterval(intervalMinutes)}**.`)
             .addFields(
               { name: "⏭️ Erster Spawn", value: `<t:${Math.floor(new Date(nextSpawnAt).getTime() / 1000)}:F>`, inline: true },
               { name: "🔔 Erinnerungen", value: reminders ? "10 und 5 Minuten vorher" : "Deaktiviert", inline: true },
@@ -844,14 +875,15 @@ client.on("interactionCreate", async i => {
         if (!e) return i.reply({ content: "❌ Bosszeit nicht gefunden.", ephemeral: true });
 
         const name = i.options.getString("name");
-        const intervalHours = i.options.getInteger("stunden");
+        const intervalMinutes = i.options.getInteger("minuten");
         const role = i.options.getRole("rolle");
         const reminders = i.options.getBoolean("erinnerungen");
 
         if (name !== null) e.name = name;
-        if (intervalHours !== null) {
-          e.intervalHours = intervalHours;
-          e.nextSpawnAt = new Date(Date.now() + intervalHours * 60 * 60 * 1000).toISOString();
+        if (intervalMinutes !== null) {
+          e.intervalMinutes = intervalMinutes;
+          delete e.intervalHours;
+          e.nextSpawnAt = new Date(Date.now() + intervalMinutes * 60 * 1000).toISOString();
           e.lastReminder10 = null;
           e.lastReminder5 = null;
           e.lastTriggered = null;
@@ -878,7 +910,7 @@ client.on("interactionCreate", async i => {
         if (!e) return i.reply({ content: "❌ Bosszeit nicht gefunden.", ephemeral: true });
 
         resetTracker(e, "Manueller Reset");
-        return i.reply(`🔄 **#${id} ${e.name}** wurde zurückgesetzt. Der nächste Spawn ist jetzt in **${e.intervalHours} Stunden**.`);
+        return i.reply(`🔄 **#${id} ${e.name}** wurde zurückgesetzt. Der nächste Spawn ist jetzt in **${formatInterval(getIntervalMinutes(e))}**.`);
       }
     }
 
