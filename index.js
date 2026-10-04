@@ -29,6 +29,8 @@ const DATA_FILE = path.join(__dirname, "data.json");
 
 const defaultData = {
   channelId: null,
+  youtubeChannelId: null,
+  tiktokChannelId: null,
   moderatorRoleId: null,
   maintenanceChannelId: null,
   events: [],
@@ -170,7 +172,7 @@ function buildCommands() {
         .setName("hinzufuegen")
         .setDescription("YouTube-Kanal überwachen.")
         .addStringOption(o => o.setName("kanal").setDescription("YouTube URL, @Handle oder Kanal-ID").setRequired(true))
-        .addChannelOption(o => o.setName("discordkanal").setDescription("Discord-Kanal für den Live-Ping").addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addChannelOption(o => o.setName("discordkanal").setDescription("Optional: überschreibt den globalen YouTube/TikTok-Meldekanal").addChannelTypes(ChannelType.GuildText).setRequired(false))
         .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(true)))
       .addSubcommand(s => s
         .setName("anzeigen")
@@ -191,7 +193,7 @@ function buildCommands() {
         .setName("hinzufuegen")
         .setDescription("TikTok-Konto überwachen.")
         .addStringOption(o => o.setName("kanal").setDescription("TikTok URL oder @Benutzername").setRequired(true))
-        .addChannelOption(o => o.setName("discordkanal").setDescription("Discord-Kanal für den Live-Ping").addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addChannelOption(o => o.setName("discordkanal").setDescription("Optional: überschreibt den globalen YouTube/TikTok-Meldekanal").addChannelTypes(ChannelType.GuildText).setRequired(false))
         .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(true)))
       .addSubcommand(s => s
         .setName("anzeigen")
@@ -212,6 +214,17 @@ function buildCommands() {
         .setName("kanal")
         .setDescription("Standard-Meldekanal für Bosszeiten.")
         .addChannelOption(o => o.setName("channel").setDescription("Textkanal").addChannelTypes(ChannelType.GuildText).setRequired(true)))
+      .addSubcommand(s => s
+        .setName("youtube-kanal")
+        .setDescription("Discord-Kanal für YouTube-Live-Meldungen festlegen.")
+        .addChannelOption(o => o.setName("channel").setDescription("Textkanal").addChannelTypes(ChannelType.GuildText).setRequired(true)))
+      .addSubcommand(s => s
+        .setName("tiktok-kanal")
+        .setDescription("Discord-Kanal für TikTok-Live-Meldungen festlegen.")
+        .addChannelOption(o => o.setName("channel").setDescription("Textkanal").addChannelTypes(ChannelType.GuildText).setRequired(true)))
+      .addSubcommand(s => s
+        .setName("anzeigen")
+        .setDescription("Zeigt die aktuelle Bot-Konfiguration."))
       .addSubcommand(s => s
         .setName("moderator")
         .setDescription("Moderator-Rolle festlegen.")
@@ -308,7 +321,7 @@ async function checkYouTube() {
       const videoId = live.id?.videoId;
       if (!videoId || entry.lastLiveId === videoId) continue;
 
-      const ch = await client.channels.fetch(entry.discordChannelId).catch(() => null);
+      const ch = await client.channels.fetch(entry.discordChannelId || data.youtubeChannelId).catch(() => null);
       if (!ch || !ch.isTextBased()) continue;
 
       const title = live.snippet?.title || "Live";
@@ -406,7 +419,7 @@ async function checkTikTok() {
       const liveId = status.roomId || `live-${entry.username}`;
       if (entry.lastLiveId === liveId) continue;
 
-      const ch = await client.channels.fetch(entry.discordChannelId).catch(() => null);
+      const ch = await client.channels.fetch(entry.discordChannelId || data.tiktokChannelId).catch(() => null);
       if (!ch || !ch.isTextBased()) continue;
 
       const embed = new EmbedBuilder()
@@ -689,6 +702,9 @@ function helpEmbed() {
         name: "⚙️ Konfiguration",
         value:
           "`/config kanal` – Boss-Meldekanal\n" +
+          "`/config youtube-kanal` – YouTube-Live-Meldekanal\n" +
+          "`/config tiktok-kanal` – TikTok-Live-Meldekanal\n" +
+          "`/config anzeigen` – aktuelle Konfiguration\n" +
           "`/config moderator` – Moderator-Rolle\n" +
           "`/config trackerkanal` – Maintenance-Tracker-Channel"
       },
@@ -758,7 +774,9 @@ client.on("interactionCreate", async i => {
           { name: "📺 YouTube", value: String(data.youtube.length), inline: true },
           { name: "🎵 TikTok", value: String(data.tiktok.length), inline: true },
           { name: "🛠️ Maintenance", value: data.maintenanceChannelId ? channelMention(data.maintenanceChannelId) : "#maintance-tracker", inline: true },
-          { name: "🔔 Meldekanal", value: channelMention(data.channelId) || "Nicht gesetzt", inline: true },
+          { name: "🔔 Boss-Meldekanal", value: channelMention(data.channelId) || "Nicht gesetzt", inline: true },
+          { name: "📺 YouTube-Meldekanal", value: channelMention(data.youtubeChannelId) || "Nicht gesetzt", inline: true },
+          { name: "🎵 TikTok-Meldekanal", value: channelMention(data.tiktokChannelId) || "Nicht gesetzt", inline: true },
           { name: "🛡️ Moderator", value: roleMention(data.moderatorRoleId) || "Nicht gesetzt", inline: true }
         )
         .setFooter({ text: `Zeitzone: ${TIMEZONE}` })
@@ -883,8 +901,12 @@ client.on("interactionCreate", async i => {
         if (!YOUTUBE_API_KEY) return i.reply({ content: "❌ `YOUTUBE_API_KEY` fehlt in der `.env`.", ephemeral: true });
 
         const input = i.options.getString("kanal", true);
-        const discordChannel = i.options.getChannel("discordkanal", true);
+        const discordChannel = i.options.getChannel("discordkanal");
         const role = i.options.getRole("rolle", true);
+
+        if (!discordChannel && !data.youtubeChannelId) {
+          return i.reply({ content: "❌ Kein YouTube-Meldekanal gesetzt. Nutze `/config youtube-kanal`.", ephemeral: true });
+        }
 
         await i.deferReply({ ephemeral: true });
         try {
@@ -897,14 +919,14 @@ client.on("interactionCreate", async i => {
             channelId: yt.id,
             name: yt.name,
             url: yt.url,
-            discordChannelId: discordChannel.id,
+            discordChannelId: discordChannel?.id || null,
             roleId: role.id,
             lastLiveId: null,
             currentLiveId: null
           });
           saveData();
 
-          return i.editReply(`✅ **${yt.name}** wurde hinzugefügt.\n📢 ${channelMention(discordChannel.id)}\n🔔 ${roleMention(role.id)}`);
+          return i.editReply(`✅ **${yt.name}** wurde hinzugefügt.\n📢 ${channelMention(discordChannel?.id || data.youtubeChannelId)}\n🔔 ${roleMention(role.id)}`);
         } catch (err) {
           return i.editReply(`❌ ${err.message}`);
         }
@@ -924,7 +946,7 @@ client.on("interactionCreate", async i => {
         const entry = data.youtube.find(x => Number(x.id) === id);
         if (!entry) return i.reply({ content: "❌ YouTube-Eintrag nicht gefunden.", ephemeral: true });
 
-        const ch = await client.channels.fetch(entry.discordChannelId).catch(() => null);
+        const ch = await client.channels.fetch(entry.discordChannelId || data.youtubeChannelId).catch(() => null);
         if (!ch || !ch.isTextBased()) return i.reply({ content: "❌ Discord-Meldekanal nicht erreichbar.", ephemeral: true });
 
         await ch.send({
@@ -954,8 +976,12 @@ client.on("interactionCreate", async i => {
 
       if (sub === "hinzufuegen") {
         const input = i.options.getString("kanal", true);
-        const discordChannel = i.options.getChannel("discordkanal", true);
+        const discordChannel = i.options.getChannel("discordkanal");
         const role = i.options.getRole("rolle", true);
+
+        if (!discordChannel && !data.tiktokChannelId) {
+          return i.reply({ content: "❌ Kein TikTok-Meldekanal gesetzt. Nutze `/config tiktok-kanal`.", ephemeral: true });
+        }
 
         await i.deferReply({ ephemeral: true });
         try {
@@ -970,14 +996,14 @@ client.on("interactionCreate", async i => {
             username: tt.username,
             name: tt.name,
             url: tt.url,
-            discordChannelId: discordChannel.id,
+            discordChannelId: discordChannel?.id || null,
             roleId: role.id,
             lastLiveId: null,
             currentLiveId: null
           });
           saveData();
 
-          return i.editReply(`✅ **${tt.name}** wurde hinzugefügt.\n📢 ${channelMention(discordChannel.id)}\n🔔 ${roleMention(role.id)}`);
+          return i.editReply(`✅ **${tt.name}** wurde hinzugefügt.\n📢 ${channelMention(discordChannel?.id || data.tiktokChannelId)}\n🔔 ${roleMention(role.id)}`);
         } catch (err) {
           return i.editReply(`❌ ${err.message}`);
         }
@@ -999,7 +1025,7 @@ client.on("interactionCreate", async i => {
         const entry = data.tiktok.find(x => Number(x.id) === id);
         if (!entry) return i.reply({ content: "❌ TikTok-Eintrag nicht gefunden.", ephemeral: true });
 
-        const ch = await client.channels.fetch(entry.discordChannelId).catch(() => null);
+        const ch = await client.channels.fetch(entry.discordChannelId || data.tiktokChannelId).catch(() => null);
         if (!ch || !ch.isTextBased()) {
           return i.reply({ content: "❌ Discord-Meldekanal nicht erreichbar.", ephemeral: true });
         }
@@ -1029,6 +1055,35 @@ client.on("interactionCreate", async i => {
         for (const e of data.events) e.channelId = channel.id;
         saveData();
         return i.reply(`✅ Boss-Meldekanal ist jetzt ${channelMention(channel.id)}.`);
+      }
+
+      if (sub === "youtube-kanal") {
+        const channel = i.options.getChannel("channel", true);
+        data.youtubeChannelId = channel.id;
+        saveData();
+        return i.reply(`✅ YouTube-Live-Meldekanal ist jetzt ${channelMention(channel.id)}.`);
+      }
+
+      if (sub === "tiktok-kanal") {
+        const channel = i.options.getChannel("channel", true);
+        data.tiktokChannelId = channel.id;
+        saveData();
+        return i.reply(`✅ TikTok-Live-Meldekanal ist jetzt ${channelMention(channel.id)}.`);
+      }
+
+      if (sub === "anzeigen") {
+        return i.reply({
+          embeds: [new EmbedBuilder()
+            .setTitle("⚙️ Bot-Konfiguration")
+            .addFields(
+              { name: "🔴 Boss-Meldekanal", value: channelMention(data.channelId) || "Nicht gesetzt", inline: true },
+              { name: "📺 YouTube-Live", value: channelMention(data.youtubeChannelId) || "Nicht gesetzt", inline: true },
+              { name: "🎵 TikTok-Live", value: channelMention(data.tiktokChannelId) || "Nicht gesetzt", inline: true },
+              { name: "🛠️ Maintenance", value: channelMention(data.maintenanceChannelId) || "#maintance-tracker", inline: true },
+              { name: "🛡️ Moderator", value: roleMention(data.moderatorRoleId) || "Nicht gesetzt", inline: true }
+            )
+            .setTimestamp()]
+        });
       }
 
       if (sub === "moderator") {
