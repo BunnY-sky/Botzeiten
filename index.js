@@ -504,6 +504,8 @@ function resetTracker(event, reason = "Manueller Reset") {
   event.nextSpawnAt = new Date(now + intervalMinutes * 60 * 1000).toISOString();
   event.lastReminder10 = null;
   event.lastReminder5 = null;
+  event.lastReminder10MessageId = null;
+  event.lastReminder5MessageId = null;
   event.lastTriggered = null;
   event.lastSpawnMessageId = null;
   event.spawnDeleteAt = null;
@@ -519,6 +521,8 @@ function resetAllTrackers(reason = "Maintenance", resetTimestamp = Date.now()) {
     e.nextSpawnAt = new Date(resetTimestamp + intervalMinutes * 60 * 1000).toISOString();
     e.lastReminder10 = null;
     e.lastReminder5 = null;
+    e.lastReminder10MessageId = null;
+    e.lastReminder5MessageId = null;
     e.lastTriggered = null;
     e.lastSpawnMessageId = null;
     e.spawnDeleteAt = null;
@@ -564,6 +568,8 @@ async function checkTimes() {
   for (const e of data.events) {
     if (e.lastSpawnMessageId === undefined) e.lastSpawnMessageId = null;
     if (e.spawnDeleteAt === undefined) e.spawnDeleteAt = null;
+    if (e.lastReminder10MessageId === undefined) e.lastReminder10MessageId = null;
+    if (e.lastReminder5MessageId === undefined) e.lastReminder5MessageId = null;
 
     // Alte Timer mit Stunden werden automatisch in Minuten umgewandelt.
     const beforeMinutes = e.intervalMinutes;
@@ -634,14 +640,36 @@ async function checkTimes() {
       });
 
       if (reminderType === 10) {
+        // Die 10-Minuten-Nachricht bleibt bis zum tatsächlichen Spawn bestehen.
         e.lastReminder10 = e.nextSpawnAt;
+        e.lastReminder10MessageId = sentMessage.id;
         changed = true;
       } else if (reminderType === 5) {
+        // Die 5-Minuten-Nachricht bleibt ebenfalls bis zum tatsächlichen Spawn bestehen.
         e.lastReminder5 = e.nextSpawnAt;
+        e.lastReminder5MessageId = sentMessage.id;
         changed = true;
       } else if (reminderType === 0) {
         e.lastSpawnMessageId = sentMessage.id;
         e.spawnDeleteAt = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+
+        // Sobald die Spawn-Nachricht geschrieben wurde, werden die zugehörigen
+        // 10- und 5-Minuten-Erinnerungen gelöscht.
+        for (const reminderId of [e.lastReminder10MessageId, e.lastReminder5MessageId]) {
+          if (!reminderId) continue;
+          try {
+            const reminderMsg = await ch.messages.fetch(reminderId).catch(() => null);
+            if (reminderMsg) {
+              await reminderMsg.delete();
+              console.log(`🗑️ Erinnerung von "${e.name}" (${reminderId}) beim Spawn gelöscht.`);
+            }
+          } catch (deleteErr) {
+            console.error(`Fehler beim Löschen einer Erinnerung von "${e.name}":`, deleteErr.message);
+          }
+        }
+
+        e.lastReminder10MessageId = null;
+        e.lastReminder5MessageId = null;
         changed = true;
       }
 
