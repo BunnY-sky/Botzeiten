@@ -172,8 +172,8 @@ function buildCommands() {
         .setName("hinzufuegen")
         .setDescription("YouTube-Kanal überwachen.")
         .addStringOption(o => o.setName("kanal").setDescription("YouTube URL, @Handle oder Kanal-ID").setRequired(true))
-        .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(true)))
-        .addChannelOption(o => o.setName("discordkanal").setDescription("Optional: überschreibt den globalen YouTube/TikTok-Meldekanal").addChannelTypes(ChannelType.GuildText).setRequired(false))
+        .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(true))
+        .addChannelOption(o => o.setName("discordkanal").setDescription("Optional: überschreibt den globalen YouTube/TikTok-Meldekanal").addChannelTypes(ChannelType.GuildText).setRequired(false)))
       .addSubcommand(s => s
         .setName("anzeigen")
         .setDescription("Zeigt überwachte YouTube-Kanäle."))
@@ -193,8 +193,8 @@ function buildCommands() {
         .setName("hinzufuegen")
         .setDescription("TikTok-Konto überwachen.")
         .addStringOption(o => o.setName("kanal").setDescription("TikTok URL oder @Benutzername").setRequired(true))
-        .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(true)))
-        .addChannelOption(o => o.setName("discordkanal").setDescription("Optional: überschreibt den globalen YouTube/TikTok-Meldekanal").addChannelTypes(ChannelType.GuildText).setRequired(false))
+        .addRoleOption(o => o.setName("rolle").setDescription("Rolle, die gepingt werden soll").setRequired(true))
+        .addChannelOption(o => o.setName("discordkanal").setDescription("Optional: überschreibt den globalen YouTube/TikTok-Meldekanal").addChannelTypes(ChannelType.GuildText).setRequired(false)))
       .addSubcommand(s => s
         .setName("anzeigen")
         .setDescription("Zeigt überwachte TikTok-Konten."))
@@ -228,7 +228,8 @@ function buildCommands() {
       .addSubcommand(s => s
         .setName("moderator")
         .setDescription("Moderator-Rolle festlegen.")
-        .addRoleOption(o => o.setName("rolle").setDescription("Rolle mit Bot-Verwaltungsrechten").setRequired(true))).addSubcommand(s => s
+        .addRoleOption(o => o.setName("rolle").setDescription("Rolle mit Bot-Verwaltungsrechten").setRequired(true)))
+      .addSubcommand(s => s
         .setName("trackerkanal")
         .setDescription("Maintenance-Tracker-Kanal festlegen.")
         .addChannelOption(o => o.setName("channel").setDescription("Channel mit Maintenance-Meldungen").addChannelTypes(ChannelType.GuildText).setRequired(true)))
